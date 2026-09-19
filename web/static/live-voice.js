@@ -29,6 +29,7 @@
   let videoEl = null;
   let canvasEl = null;
   let frameTimer = null;
+  let framesSent = 0;
 
   function wsUrl() {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -124,6 +125,12 @@
       if (msg.type === 'transcript' && msg.content && onTranscript) {
         onTranscript(msg.content);
       }
+      if (msg.type === 'transcript' && msg.content) {
+        window.dispatchEvent(new CustomEvent('zavora:voice-transcript', { detail: { content: msg.content } }));
+      }
+      if (msg.type === 'response_done') {
+        window.dispatchEvent(new CustomEvent('zavora:voice-transcript', { detail: { done: true } }));
+      }
       if (msg.type === 'tool_call') {
         // adk-realtime forwards tool arguments as the raw JSON string the model produced.
         if (typeof msg.arguments === 'string') {
@@ -161,6 +168,16 @@
     sessionId = opts?.sessionId || null;
     onTranscript = opts?.onTranscript || null;
 
+    // Microphone first: the browser's permission prompt waits for a person, so it must not
+    // race the connection timeout below. The socket opens only once capture is live.
+    try {
+      await startCapture();
+    } catch (e) {
+      console.warn('live voice capture failed:', e);
+      stopCapture();
+      return false;
+    }
+
     return new Promise((resolve) => {
       ws = new WebSocket(wsUrl());
       ws.binaryType = 'arraybuffer';
@@ -175,15 +192,9 @@
         if (active) stop();
       };
       ws.onmessage = handleMessage;
-      ws.onopen = async () => {
-        try {
-          await startCapture();
-          active = true;
-          resolve(true);
-        } catch (e) {
-          console.warn('live voice capture failed:', e);
-          fail();
-        }
+      ws.onopen = () => {
+        active = true;
+        resolve(true);
       };
 
       setTimeout(() => {
@@ -205,7 +216,9 @@
     await videoEl.play();
     canvasEl = document.createElement('canvas');
     cameraActive = true;
+    framesSent = 0;
     frameTimer = setInterval(sendFrame, FRAME_MS);
+    window.dispatchEvent(new CustomEvent('zavora:camera', { detail: { active: true, stream: camStream } }));
     return true;
   }
 
@@ -219,11 +232,17 @@
     canvasEl.getContext('2d').drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
     const url = canvasEl.toDataURL('image/jpeg', 0.6);
     const data = url.slice(url.indexOf(',') + 1);
-    if (data) ws.send(JSON.stringify({ type: 'frame', mime: 'image/jpeg', data }));
+    if (data) {
+      ws.send(JSON.stringify({ type: 'frame', mime: 'image/jpeg', data }));
+      framesSent++;
+      window.dispatchEvent(new CustomEvent('zavora:camera-frame', { detail: { count: framesSent } }));
+    }
   }
 
   function stopCamera() {
+    const wasActive = cameraActive;
     cameraActive = false;
+    if (wasActive) window.dispatchEvent(new CustomEvent('zavora:camera', { detail: { active: false } }));
     if (frameTimer) {
       clearInterval(frameTimer);
       frameTimer = null;

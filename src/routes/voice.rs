@@ -68,7 +68,7 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
-    let runner = match crate::voice::realtime::build_suzy_runner(&state, session_id).await {
+    let runner = match crate::voice::realtime::build_suzy_runner(&state, session_id.clone()).await {
         Ok(r) => std::sync::Arc::new(r),
         Err(e) => {
             error!("voice runner init failed: {e:#}");
@@ -96,11 +96,19 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
     }
 
     info!("Gemini Live voice session connected");
+    // The UI session this voice session belongs to — the id the client keeps and submits intents
+    // with. The realtime runner has an id of its own that is not a UI session; sending that as
+    // `session_id` made every intent raised from voice (submit_intent, camera gestures) a 404.
+    let ui_session_id = match session_id.as_deref() {
+        Some(sid) if state.sessions.get(sid).await.is_some() => sid.to_string(),
+        _ => state.sessions.create().await.session_id,
+    };
     let _ = ws_sender
         .send(ws::Message::Text(
             serde_json::json!({
                 "type": "connected",
-                "session_id": runner.session_id().await,
+                "session_id": ui_session_id,
+                "runner_session_id": runner.session_id().await,
                 "camera": state.voice.camera
             })
             .to_string()

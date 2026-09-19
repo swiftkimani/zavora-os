@@ -797,7 +797,7 @@ Each milestone:
 | M10-T2 | Mic stream → adk-realtime |
 | M10-T3 | Tool calls during voice |
 | M10-T4 | Fallback to wav clips on WS failure |
-| M10-T5 | Camera channel: client sends `{type:"frame", mime, data}` (JPEG, ≈1 fps, gated at 2.5 fps / 256 KB) up `/ws/voice`; Suzy reports deliberate gestures with the `ui_gesture` tool, relayed as `tool_call`; `gestures.js` maps swipe → world pager, open palm → `POST /api/pause`, wave → briefing intent. Frames are never stored or logged; flag `ZAVORA_CAMERA`; `/api/voice/status` exposes `camera` |
+| M10-T5 | Camera channel: client sends `{type:"frame", mime, data}` (JPEG, ≈1 fps, gated at 2.5 fps / 256 KB) up `/ws/voice`; Suzy reports deliberate gestures with the `ui_gesture` tool, relayed as `tool_call`; `gestures.js` maps swipe → world pager, open palm → `POST /api/pause`, wave → briefing intent, pinch → dismiss the card in front (`fling`) or close the camera window. Frames are never stored or logged; flag `ZAVORA_CAMERA`; `/api/voice/status` exposes `camera` |
 
 **Validation:** Voice conversation with Suzy updates calendar card in real time.
 

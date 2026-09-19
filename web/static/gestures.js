@@ -39,6 +39,22 @@
     }
   }
 
+  // Pinch closes a window: the card in front (focused, else the newest) through the field's own
+  // fling — the same dismiss a drag would do — or, with no card open, the camera window itself.
+  function closeWindow() {
+    const card = document.querySelector('#cards .card.focused') || [...document.querySelectorAll('#cards .card')].pop();
+    if (card && typeof window.fling === 'function') {
+      window.fling(card);
+      return;
+    }
+    const live = window.ZavoraLiveVoice;
+    if (live?.isCameraActive?.()) {
+      live.stopCamera();
+      document.getElementById('cam')?.classList.remove('listening');
+      toast('Camera window closed.');
+    }
+  }
+
   function onGesture(ev) {
     if (window.__ZAVORA_DEMO__) return;
     const gesture = ev.detail?.gesture;
@@ -52,6 +68,9 @@
         break;
       case 'open_palm':
         pauseAgents();
+        break;
+      case 'pinch':
+        closeWindow();
         break;
       case 'wave':
         window.dispatchEvent(

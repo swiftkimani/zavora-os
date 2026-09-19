@@ -11,6 +11,7 @@
     swipe_right: '👈 swipe → Work world',
     open_palm: '✋ open palm → agents paused',
     wave: "👋 wave → today's briefing",
+    pinch: '🤏 pinch → window closed',
   };
 
   let box = null, video = null, status = null, last = null;

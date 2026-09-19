@@ -25,10 +25,11 @@ pub enum Gesture {
     SwipeRight,
     OpenPalm,
     Wave,
+    Pinch,
 }
 
 impl Gesture {
-    pub const ALL: [Gesture; 4] = [Gesture::SwipeLeft, Gesture::SwipeRight, Gesture::OpenPalm, Gesture::Wave];
+    pub const ALL: [Gesture; 5] = [Gesture::SwipeLeft, Gesture::SwipeRight, Gesture::OpenPalm, Gesture::Wave, Gesture::Pinch];
 
     pub fn as_str(&self) -> &'static str {
         match self {
@@ -36,6 +37,7 @@ impl Gesture {
             Gesture::SwipeRight => "swipe_right",
             Gesture::OpenPalm => "open_palm",
             Gesture::Wave => "wave",
+            Gesture::Pinch => "pinch",
         }
     }
 
@@ -45,6 +47,7 @@ impl Gesture {
             "swipe_right" => Some(Gesture::SwipeRight),
             "open_palm" => Some(Gesture::OpenPalm),
             "wave" => Some(Gesture::Wave),
+            "pinch" => Some(Gesture::Pinch),
             _ => None,
         }
     }
@@ -56,6 +59,7 @@ impl Gesture {
             Gesture::SwipeRight => "a hand sweeping from left to right",
             Gesture::OpenPalm => "an open palm held still toward the camera for about a second",
             Gesture::Wave => "a wave",
+            Gesture::Pinch => "a pinch — thumb and index finger brought together, like picking something up",
         }
     }
 
@@ -66,6 +70,7 @@ impl Gesture {
             Gesture::SwipeRight => "moves the view toward the Work world",
             Gesture::OpenPalm => "pauses the agents",
             Gesture::Wave => "asks for today's briefing",
+            Gesture::Pinch => "closes the card in front (or the camera window when no card is open)",
         }
     }
 }

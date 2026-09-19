@@ -1698,32 +1698,41 @@ function startSpeechFallback(){
     if (input.value.trim()) submitIntent(input.value);
   };
 }
+// Live inputs (M10): the microphone and the camera are independent — either runs alone, both
+// share one Suzy session. The buttons mirror the actual capture state.
+const cam = document.getElementById('cam');
+function syncLiveUi(){
+  const live = window.ZavoraLiveVoice;
+  if (!live) return;
+  const m = !!live.isMicActive?.(), c = !!live.isCameraActive?.();
+  mic.classList.toggle('listening', m);
+  cam?.classList.toggle('listening', c);
+  input.placeholder = m && c ? 'Suzy is listening and watching…' : m ? 'Suzy is listening…' : c ? 'Suzy is watching…' : 'What do you want to do?';
+}
+window.addEventListener('zavora:mic', syncLiveUi);
+window.addEventListener('zavora:camera', syncLiveUi);
+
 mic.addEventListener('click', async () => {
   const live = window.ZavoraLiveVoice;
-  if (live?.isActive?.()) {
-    live.stop();
-    mic.classList.remove('listening');
-    document.getElementById('cam')?.classList.remove('listening');
-    input.placeholder = 'What do you want to do?';
+  if (live?.isMicActive?.()) {
+    live.stopMic();
+    syncLiveUi();
     return;
   }
   if (live?.isEnabled?.()) {
     mic.classList.add('listening');
     input.placeholder = 'Suzy is listening…';
-    const sid = sessionStorage.getItem('zavora_session_id');
-    const ok = await live.start({
-      sessionId: sid,
+    const ok = await live.startMic({
+      sessionId: sessionStorage.getItem('zavora_session_id'),
       onTranscript: (t) => { if (t.trim()) input.value = t.trim(); },
     });
+    syncLiveUi();
     if (ok) return;
-    mic.classList.remove('listening');
   }
   startSpeechFallback();
 });
 
-// Camera channel (M10-T5): shown only when the server offers it; frames ride the voice socket,
-// so turning the camera on starts Suzy listening first. Never in demo mode.
-const cam = document.getElementById('cam');
+// Camera (M10-T5): shown only when the server offers it; never in demo mode.
 (async () => {
   if (!cam) return;
   if (window.__ZAVORA_BOOT__) await window.__ZAVORA_BOOT__;
@@ -1739,32 +1748,14 @@ cam?.addEventListener('click', async () => {
   if (!live?.isCameraEnabled?.()) return;
   if (live.isCameraActive()) {
     live.stopCamera();
-    cam.classList.remove('listening');
+    syncLiveUi();
     return;
   }
   cam.classList.add('listening');
-  if (!live.isActive()) {
-    // Same start as the mic button, but awaited: the browser's mic prompt waits for a person.
-    mic.classList.add('listening');
-    input.placeholder = 'Suzy is listening…';
-    const ok = await live.start({
-      sessionId: sessionStorage.getItem('zavora_session_id'),
-      onTranscript: (t) => { if (t.trim()) input.value = t.trim(); },
-    });
-    if (!ok) {
-      mic.classList.remove('listening');
-      cam.classList.remove('listening');
-      input.placeholder = 'What do you want to do?';
-      return;
-    }
-  }
-  input.placeholder = 'Suzy is listening and watching…';
-  let ok = false;
-  try { ok = await live.startCamera(); } catch (e) { console.warn('camera unavailable:', e); }
-  if (!ok) {
-    cam.classList.remove('listening');
-    input.placeholder = 'Suzy is listening…';
-  }
+  input.placeholder = live.isMicActive?.() ? 'Suzy is listening and watching…' : 'Suzy is watching…';
+  try { await live.startCamera({ sessionId: sessionStorage.getItem('zavora_session_id') }); }
+  catch (e) { console.warn('camera unavailable:', e); }
+  syncLiveUi();
 });
 
 // click empty space exits focus

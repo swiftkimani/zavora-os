@@ -1,29 +1,33 @@
 /**
- * Gemini Live voice bridge — WS /ws/voice (mia pattern).
- * Falls back to prerecorded clips + SpeechRecognition when unavailable.
- * Camera channel (M10-T5): with voice active, still frames go up the same socket about once a
- * second and Suzy's `ui_gesture` tool call comes back as a `zavora:gesture` event (gestures.js).
+ * Gemini Live bridge — WS /ws/voice (mia pattern).
+ * One Live session carries two independent inputs: the microphone (PCM up, Suzy's speech back)
+ * and the camera (JPEG frames up about once a second, gestures back as `zavora:gesture`).
+ * Either runs alone; the session opens with the first input and closes with the last.
+ * Falls back to prerecorded clips + SpeechRecognition when Live is unavailable.
  */
 (function () {
   'use strict';
 
   const INPUT_RATE = 16000;
   const OUTPUT_RATE = 24000;
-
-  let enabled = false;
-  let active = false;
-  let ws = null;
-  let mediaStream = null;
-  let captureCtx = null;
-  let playbackCtx = null;
-  let processor = null;
-  let sessionId = null;
-  let onTranscript = null;
-
-  // Camera channel — frames are drawn to a small canvas and sent as JPEG; nothing is kept.
   const FRAME_MS = 1000;
   const FRAME_W = 320;
+
+  let enabled = false;
   let cameraEnabled = false;
+  let ws = null;
+  let connecting = null; // Promise<boolean> while the socket opens
+  let sessionId = null;
+  let onTranscript = null;
+  let playbackCtx = null;
+
+  // Microphone
+  let micActive = false;
+  let micStream = null;
+  let captureCtx = null;
+  let processor = null;
+
+  // Camera — frames are drawn to a small canvas and sent as JPEG; nothing is kept.
   let cameraActive = false;
   let camStream = null;
   let videoEl = null;
@@ -37,66 +41,29 @@
     return `${proto}//${location.host}/ws/voice${q}`;
   }
 
+  function sessionOpen() {
+    return !!ws && ws.readyState === WebSocket.OPEN;
+  }
+
+  function emit(name, detail) {
+    window.dispatchEvent(new CustomEvent(name, { detail }));
+  }
+
   function playPcm(buffer) {
     playbackCtx = playbackCtx || new AudioContext({ sampleRate: OUTPUT_RATE });
     if (playbackCtx.state === 'suspended') playbackCtx.resume();
     const pcm16 = new Int16Array(buffer);
-    const float32 = new Float32Array(pcm16.length);
-    for (let i = 0; i < pcm16.length; i++) float32[i] = pcm16[i] / 32768;
-    const audioBuffer = playbackCtx.createBuffer(1, float32.length, OUTPUT_RATE);
-    audioBuffer.getChannelData(0).set(float32);
-    const source = playbackCtx.createBufferSource();
-    source.buffer = audioBuffer;
-    source.connect(playbackCtx.destination);
-    source.start();
-    if (typeof window.drive === 'function' && typeof window.voiceTarget === 'function') {
-      try {
-        const el = document.createElement('audio');
-        window.drive(el);
-      } catch (_) {}
-    }
+    const f32 = new Float32Array(pcm16.length);
+    for (let i = 0; i < pcm16.length; i++) f32[i] = pcm16[i] / 0x8000;
+    const audioBuffer = playbackCtx.createBuffer(1, f32.length, OUTPUT_RATE);
+    audioBuffer.copyToChannel(f32, 0);
+    const src = playbackCtx.createBufferSource();
+    src.buffer = audioBuffer;
+    src.connect(playbackCtx.destination);
+    src.start();
   }
 
-  async function startCapture() {
-    mediaStream = await navigator.mediaDevices.getUserMedia({
-      audio: {
-        sampleRate: INPUT_RATE,
-        channelCount: 1,
-        echoCancellation: true,
-        noiseSuppression: true,
-      },
-    });
-    captureCtx = new AudioContext({ sampleRate: INPUT_RATE });
-    const source = captureCtx.createMediaStreamSource(mediaStream);
-    processor = captureCtx.createScriptProcessor(4096, 1, 1);
-    processor.onaudioprocess = (e) => {
-      if (!active || !ws || ws.readyState !== WebSocket.OPEN) return;
-      const input = e.inputBuffer.getChannelData(0);
-      const pcm16 = new Int16Array(input.length);
-      for (let i = 0; i < input.length; i++) {
-        const s = Math.max(-1, Math.min(1, input[i]));
-        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
-      }
-      ws.send(pcm16.buffer);
-    };
-    source.connect(processor);
-    processor.connect(captureCtx.destination);
-  }
-
-  function stopCapture() {
-    if (processor) {
-      processor.disconnect();
-      processor = null;
-    }
-    if (captureCtx) {
-      captureCtx.close().catch(() => {});
-      captureCtx = null;
-    }
-    if (mediaStream) {
-      mediaStream.getTracks().forEach((t) => t.stop());
-      mediaStream = null;
-    }
-  }
+  // ---- messages from the server ----------------------------------------------------------
 
   function handleMessage(ev) {
     if (typeof ev.data === 'string') {
@@ -115,21 +82,14 @@
       if (msg.type === 'connected' && typeof msg.camera === 'boolean') {
         cameraEnabled = enabled && msg.camera;
       }
-      if (msg.type === 'tool_call' && msg.name === 'ui_gesture' && msg.arguments?.gesture) {
-        window.dispatchEvent(new CustomEvent('zavora:gesture', { detail: { gesture: msg.arguments.gesture } }));
-      }
-      if (msg.type === 'frame_rejected') {
-        console.warn('live camera: frame rejected —', msg.reason);
-        if (msg.reason === 'camera_off') stopCamera();
-      }
-      if (msg.type === 'transcript' && msg.content && onTranscript) {
-        onTranscript(msg.content);
-      }
       if (msg.type === 'transcript' && msg.content) {
-        window.dispatchEvent(new CustomEvent('zavora:voice-transcript', { detail: { content: msg.content } }));
+        if (onTranscript) onTranscript(msg.content);
+        emit('zavora:voice-transcript', { content: msg.content });
       }
       if (msg.type === 'response_done') {
-        window.dispatchEvent(new CustomEvent('zavora:voice-transcript', { detail: { done: true } }));
+        emit('zavora:voice-transcript', { done: true });
+        // A session opened only to speak (greeting) has nothing left to do.
+        if (!micActive && !cameraActive) closeSession();
       }
       if (msg.type === 'tool_call') {
         // adk-realtime forwards tool arguments as the raw JSON string the model produced.
@@ -147,9 +107,14 @@
           sessionStorage.setItem('zavora_session_id', sid);
           sessionId = sid;
         }
-        window.dispatchEvent(
-          new CustomEvent('zavora:voice-intent', { detail: { sessionId: sid, args: msg.arguments } })
-        );
+        emit('zavora:voice-intent', { sessionId: sid, args: msg.arguments });
+      }
+      if (msg.type === 'tool_call' && msg.name === 'ui_gesture' && msg.arguments?.gesture) {
+        emit('zavora:gesture', { gesture: msg.arguments.gesture });
+      }
+      if (msg.type === 'frame_rejected') {
+        console.warn('live camera: frame rejected —', msg.reason);
+        if (msg.reason === 'camera_off') stopCamera();
       }
       if (msg.type === 'error') {
         console.warn('live voice:', msg.message);
@@ -163,48 +128,137 @@
     }
   }
 
-  async function start(opts) {
-    if (!enabled || active) return false;
-    sessionId = opts?.sessionId || null;
-    onTranscript = opts?.onTranscript || null;
+  // ---- session -----------------------------------------------------------------------------
 
-    // Microphone first: the browser's permission prompt waits for a person, so it must not
-    // race the connection timeout below. The socket opens only once capture is live.
-    try {
-      await startCapture();
-    } catch (e) {
-      console.warn('live voice capture failed:', e);
-      stopCapture();
-      return false;
-    }
-
-    return new Promise((resolve) => {
-      ws = new WebSocket(wsUrl());
-      ws.binaryType = 'arraybuffer';
-
-      const fail = () => {
-        stop();
-        resolve(false);
+  function ensureSession(opts) {
+    if (opts?.sessionId) sessionId = opts.sessionId;
+    if (opts?.onTranscript) onTranscript = opts.onTranscript;
+    if (!enabled) return Promise.resolve(false);
+    if (sessionOpen()) return Promise.resolve(true);
+    if (connecting) return connecting;
+    connecting = new Promise((resolve) => {
+      const sock = new WebSocket(wsUrl());
+      sock.binaryType = 'arraybuffer';
+      ws = sock;
+      let settled = false;
+      const settle = (ok) => {
+        if (settled) return;
+        settled = true;
+        connecting = null;
+        resolve(ok);
       };
-
-      ws.onerror = fail;
-      ws.onclose = () => {
-        if (active) stop();
+      sock.onerror = () => {
+        if (ws === sock) closeSession();
+        settle(false);
       };
-      ws.onmessage = handleMessage;
-      ws.onopen = () => {
-        active = true;
-        resolve(true);
+      sock.onclose = () => {
+        if (ws === sock) {
+          ws = null;
+          stopMicCapture();
+          stopCameraCapture();
+        }
+        settle(false);
       };
-
+      sock.onmessage = handleMessage;
+      sock.onopen = () => settle(true);
       setTimeout(() => {
-        if (!active) fail();
+        if (!settled) {
+          try {
+            sock.close();
+          } catch (_) {}
+          settle(false);
+        }
       }, 8000);
     });
+    return connecting;
   }
 
-  async function startCamera() {
-    if (!cameraEnabled || cameraActive || !active || !ws || ws.readyState !== WebSocket.OPEN) return false;
+  function closeSession() {
+    const sock = ws;
+    ws = null;
+    if (sock) {
+      try {
+        sock.close();
+      } catch (_) {}
+    }
+    stopMicCapture();
+    stopCameraCapture();
+  }
+
+  function maybeCloseSession() {
+    if (!micActive && !cameraActive) closeSession();
+  }
+
+  // ---- microphone --------------------------------------------------------------------------
+
+  async function startMicCapture() {
+    micStream = await navigator.mediaDevices.getUserMedia({
+      audio: { sampleRate: INPUT_RATE, channelCount: 1, echoCancellation: true, noiseSuppression: true },
+    });
+    captureCtx = new AudioContext({ sampleRate: INPUT_RATE });
+    const source = captureCtx.createMediaStreamSource(micStream);
+    processor = captureCtx.createScriptProcessor(4096, 1, 1);
+    processor.onaudioprocess = (e) => {
+      if (!micActive || !sessionOpen()) return;
+      const input = e.inputBuffer.getChannelData(0);
+      const pcm16 = new Int16Array(input.length);
+      for (let i = 0; i < input.length; i++) {
+        const s = Math.max(-1, Math.min(1, input[i]));
+        pcm16[i] = s < 0 ? s * 0x8000 : s * 0x7fff;
+      }
+      ws.send(pcm16.buffer);
+    };
+    source.connect(processor);
+    processor.connect(captureCtx.destination);
+  }
+
+  function stopMicCapture() {
+    const was = micActive;
+    micActive = false;
+    if (processor) {
+      processor.disconnect();
+      processor = null;
+    }
+    if (captureCtx) {
+      captureCtx.close().catch(() => {});
+      captureCtx = null;
+    }
+    if (micStream) {
+      micStream.getTracks().forEach((t) => t.stop());
+      micStream = null;
+    }
+    if (was) emit('zavora:mic', { active: false });
+  }
+
+  /** Microphone on: the browser's permission prompt comes first (no deadline), then the session. */
+  async function startMic(opts) {
+    if (!enabled) return false;
+    if (micActive) return true;
+    try {
+      await startMicCapture();
+    } catch (e) {
+      console.warn('live voice capture failed:', e);
+      stopMicCapture();
+      return false;
+    }
+    const ok = await ensureSession(opts);
+    if (!ok) {
+      stopMicCapture();
+      return false;
+    }
+    micActive = true;
+    emit('zavora:mic', { active: true });
+    return true;
+  }
+
+  function stopMic() {
+    stopMicCapture();
+    maybeCloseSession();
+  }
+
+  // ---- camera ------------------------------------------------------------------------------
+
+  async function startCameraCapture() {
     camStream = await navigator.mediaDevices.getUserMedia({
       video: { width: { ideal: 640 }, height: { ideal: 360 }, frameRate: { ideal: 5, max: 10 }, facingMode: 'user' },
       audio: false,
@@ -215,15 +269,10 @@
     videoEl.srcObject = camStream;
     await videoEl.play();
     canvasEl = document.createElement('canvas');
-    cameraActive = true;
-    framesSent = 0;
-    frameTimer = setInterval(sendFrame, FRAME_MS);
-    window.dispatchEvent(new CustomEvent('zavora:camera', { detail: { active: true, stream: camStream } }));
-    return true;
   }
 
   function sendFrame() {
-    if (!cameraActive || !active || !ws || ws.readyState !== WebSocket.OPEN) return;
+    if (!cameraActive || !sessionOpen() || !videoEl) return;
     const vw = videoEl.videoWidth;
     const vh = videoEl.videoHeight;
     if (!vw || !vh) return;
@@ -235,14 +284,13 @@
     if (data) {
       ws.send(JSON.stringify({ type: 'frame', mime: 'image/jpeg', data }));
       framesSent++;
-      window.dispatchEvent(new CustomEvent('zavora:camera-frame', { detail: { count: framesSent } }));
+      emit('zavora:camera-frame', { count: framesSent });
     }
   }
 
-  function stopCamera() {
-    const wasActive = cameraActive;
+  function stopCameraCapture() {
+    const was = cameraActive;
     cameraActive = false;
-    if (wasActive) window.dispatchEvent(new CustomEvent('zavora:camera', { detail: { active: false } }));
     if (frameTimer) {
       clearInterval(frameTimer);
       frameTimer = null;
@@ -259,23 +307,42 @@
       camStream.getTracks().forEach((t) => t.stop());
       camStream = null;
     }
+    if (was) emit('zavora:camera', { active: false });
   }
 
-  function stop() {
-    active = false;
-    stopCamera();
-    stopCapture();
-    if (ws) {
-      try {
-        ws.close();
-      } catch (_) {}
-      ws = null;
+  /** Camera on, with or without the microphone: permission prompt first, then the session. */
+  async function startCamera(opts) {
+    if (!cameraEnabled) return false;
+    if (cameraActive) return true;
+    try {
+      await startCameraCapture();
+    } catch (e) {
+      console.warn('live camera capture failed:', e);
+      stopCameraCapture();
+      return false;
     }
+    const ok = await ensureSession(opts);
+    if (!ok) {
+      stopCameraCapture();
+      return false;
+    }
+    cameraActive = true;
+    framesSent = 0;
+    frameTimer = setInterval(sendFrame, FRAME_MS);
+    emit('zavora:camera', { active: true, stream: camStream });
+    return true;
   }
+
+  function stopCamera() {
+    stopCameraCapture();
+    maybeCloseSession();
+  }
+
+  // ---- speech only (greeting) --------------------------------------------------------------
 
   async function speakText(text) {
     if (!enabled) return false;
-    const ok = await start({});
+    const ok = await ensureSession({});
     if (!ok || !ws) return false;
     ws.send(JSON.stringify({ type: 'text', content: text }));
     return true;
@@ -298,15 +365,22 @@
 
   window.ZavoraLiveVoice = {
     probe,
-    start,
-    stop,
-    speakText,
-    isEnabled: () => enabled,
-    isActive: () => active,
+    // microphone
+    startMic,
+    stopMic,
+    isMicActive: () => micActive,
+    // camera
     startCamera,
     stopCamera,
     isCameraEnabled: () => cameraEnabled,
     isCameraActive: () => cameraActive,
+    // session
+    speakText,
+    isEnabled: () => enabled,
+    isActive: () => sessionOpen(),
+    // legacy names (mic)
+    start: startMic,
+    stop: stopMic,
   };
 
   probe();

@@ -54,9 +54,16 @@
   window.addEventListener('zavora:gesture', (e) => {
     if (!last) return;
     const g = e.detail?.gesture;
+    if (!g || g === 'none') return;
     last.textContent = EFFECT[g] || `gesture: ${g}`;
     last.classList.add('hit');
     setTimeout(() => last.classList.remove('hit'), 1800);
+  });
+
+  window.addEventListener('zavora:session', (e) => {
+    if (!status) return;
+    if (e.detail?.state === 'reconnecting') status.textContent = 'Reconnecting to Suzy…';
+    else if (e.detail?.state === 'lost') status.textContent = 'Connection lost — click 📷 to restart';
   });
 
   window.addEventListener('zavora:voice-transcript', (e) => {

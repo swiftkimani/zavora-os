@@ -15,8 +15,17 @@ use std::time::{Duration, Instant};
 
 use serde_json::json;
 
-/// Tool the model calls once per recognised gesture.
+/// Tool the model calls once per recognised gesture (or with `none` after a look tick).
 pub const TOOL_NAME: &str = "ui_gesture";
+/// Value the model reports when a look tick shows no gesture. Not a [`Gesture`]; clients ignore it.
+pub const NO_GESTURE: &str = "none";
+/// Gemini Live only evaluates its input when a turn ends (speech, or a text message). While
+/// frames are flowing and nobody is speaking, the server sends this text every
+/// [`LOOK_INTERVAL`] so the model checks the latest frames for a gesture.
+pub const LOOK_PROMPT: &str = "[look]";
+pub const LOOK_INTERVAL: Duration = Duration::from_millis(2000);
+/// No look tick this soon after microphone audio: the user's own turn will cover the frames.
+pub const SPEECH_GRACE: Duration = Duration::from_millis(1500);
 
 /// Deliberate hand gestures Suzy may report. What each one does is decided by the client.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -82,8 +91,8 @@ pub fn tool_parameters() -> serde_json::Value {
         "properties": {
             "gesture": {
                 "type": "string",
-                "enum": Gesture::ALL.iter().map(|g| g.as_str()).collect::<Vec<_>>(),
-                "description": "The gesture you recognised in the camera frames"
+                "enum": Gesture::ALL.iter().map(|g| g.as_str()).chain(std::iter::once(NO_GESTURE)).collect::<Vec<_>>(),
+                "description": "The gesture you recognised in the camera frames, or none"
             }
         },
         "required": ["gesture"]
@@ -93,11 +102,15 @@ pub fn tool_parameters() -> serde_json::Value {
 /// Appended to Suzy's instruction when the camera channel is on.
 pub fn instruction() -> String {
     let mut s = String::from(
-        "\n\nCamera: when the user turns the camera on you also receive still frames about once per second. \
-         Use them only to recognise the deliberate hand gestures below and whether the user is present. \
-         Do not describe what you see unless asked, and never mention people, objects, screens or text \
-         in the frame. When you recognise a gesture, call ui_gesture exactly once for it and then stay \
-         quiet unless the user speaks:",
+        "\n\nCamera: when the user turns the camera on you also receive still frames, about two per second, \
+         mirrored like a selfie — a hand the user moves to their left moves left in the frame. Use them only \
+         to recognise the deliberate hand gestures below and whether the user is present. While the camera \
+         is on you periodically get the message \"[look]\": compare the most recent frames and call \
+         ui_gesture with the gesture you see, or with \"none\" if there is none — never answer \"[look]\" \
+         with words. A gesture can also happen while the user is speaking; report it the same way. Do not \
+         describe what you see unless asked, and never mention people, objects, screens or text in the \
+         frame. Call ui_gesture once per gesture and do not repeat it for the same movement; after the \
+         call stay quiet unless the user speaks:",
     );
     for g in Gesture::ALL {
         s.push_str(&format!("\n- {} → ui_gesture {{\"gesture\": \"{}\"}}: {}.", g.cue(), g.as_str(), g.effect()));
@@ -204,6 +217,9 @@ mod tests {
             assert!(allowed.iter().any(|v| v == g.as_str()));
         }
         assert!(text.contains("never mention people"), "privacy rule stays in the prompt");
+        assert!(text.contains(LOOK_PROMPT) && text.contains("mirrored"), "look tick and mirroring are explained");
+        assert!(allowed.iter().any(|v| v == NO_GESTURE), "the model can answer a look with none");
+        assert_eq!(Gesture::parse(NO_GESTURE), None, "none is not a gesture");
         assert_eq!(schema["required"][0], "gesture");
         assert_eq!(TOOL_NAME, "ui_gesture");
     }

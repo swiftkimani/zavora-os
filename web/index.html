@@ -286,6 +286,12 @@
   @keyframes camPulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
   .cam-last { padding: 0 10px 10px; font-size: 12px; line-height: 1.35; color: var(--ink); min-height: 16px; transition: color .3s; }
   .cam-last.hit { color: var(--accent-c); }
+  /* Gesture HUD: what was seen and what it is doing */
+  .gesture-hud { position: fixed; top: 72px; left: 50%; transform: translate(-50%, -8px); z-index: 60; pointer-events: none;
+    padding: 10px 18px; border-radius: 999px; background: rgba(10,12,20,.84); border: 1px solid var(--stroke); backdrop-filter: blur(10px);
+    color: var(--ink); font-size: 14px; letter-spacing: .01em; white-space: nowrap; opacity: 0;
+    transition: opacity .25s ease, transform .3s var(--spring); }
+  .gesture-hud.show { opacity: 1; transform: translate(-50%, 0); }
   .mic.listening { color: #fff; border-color: var(--accent-c);
     background: linear-gradient(120deg, var(--accent-c), #ff5c8a); }
   .mic.listening::after { content: ""; position: absolute; inset: -6px; border-radius: 50%;

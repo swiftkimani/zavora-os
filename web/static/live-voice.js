@@ -10,8 +10,8 @@
 
   const INPUT_RATE = 16000;
   const OUTPUT_RATE = 24000;
-  const FRAME_MS = 1000;
-  const FRAME_W = 320;
+  const FRAME_MS = 500; // two frames a second: a swipe spans several frames
+  const FRAME_W = 480;
 
   let enabled = false;
   let cameraEnabled = false;
@@ -110,7 +110,7 @@
         emit('zavora:voice-intent', { sessionId: sid, args: msg.arguments });
       }
       if (msg.type === 'tool_call' && msg.name === 'ui_gesture' && msg.arguments?.gesture) {
-        emit('zavora:gesture', { gesture: msg.arguments.gesture });
+        emit('zavora:gesture', { gesture: msg.arguments.gesture }); // 'none' = a look tick saw nothing
       }
       if (msg.type === 'frame_rejected') {
         console.warn('live camera: frame rejected —', msg.reason);
@@ -154,8 +154,7 @@
       sock.onclose = () => {
         if (ws === sock) {
           ws = null;
-          stopMicCapture();
-          stopCameraCapture();
+          if (micActive || cameraActive) reconnect();
         }
         settle(false);
       };
@@ -171,6 +170,28 @@
       }, 8000);
     });
     return connecting;
+  }
+
+  // The session dropped while an input is live (Gemini session limits, network): reopen it a
+  // few times before giving up. Captures keep running; sends wait for the socket.
+  let reconnecting = false;
+  async function reconnect() {
+    if (reconnecting) return;
+    reconnecting = true;
+    emit('zavora:session', { state: 'reconnecting' });
+    let ok = false;
+    for (const delay of [800, 1600, 3200]) {
+      await new Promise((r) => setTimeout(r, delay));
+      if (!micActive && !cameraActive) break;
+      ok = await ensureSession({});
+      if (ok) break;
+    }
+    reconnecting = false;
+    emit('zavora:session', { state: ok ? 'connected' : 'lost' });
+    if (!ok) {
+      stopMicCapture();
+      stopCameraCapture();
+    }
   }
 
   function closeSession() {
@@ -278,8 +299,12 @@
     if (!vw || !vh) return;
     canvasEl.width = FRAME_W;
     canvasEl.height = Math.max(1, Math.round((FRAME_W * vh) / vw));
-    canvasEl.getContext('2d').drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
-    const url = canvasEl.toDataURL('image/jpeg', 0.6);
+    // Mirrored like the preview, so "left" in the frame is the user's left.
+    const ctx = canvasEl.getContext('2d');
+    ctx.setTransform(-1, 0, 0, 1, canvasEl.width, 0);
+    ctx.drawImage(videoEl, 0, 0, canvasEl.width, canvasEl.height);
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    const url = canvasEl.toDataURL('image/jpeg', 0.7);
     const data = url.slice(url.indexOf(',') + 1);
     if (data) {
       ws.send(JSON.stringify({ type: 'frame', mime: 'image/jpeg', data }));

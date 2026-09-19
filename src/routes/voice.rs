@@ -10,6 +10,10 @@ use axum::{
 use base64::Engine as _;
 use futures::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use std::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use std::sync::{Arc, Mutex};
+use std::time::Instant;
+
 use tokio::sync::mpsc;
 use tracing::{error, info, warn};
 
@@ -118,13 +122,22 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
 
     let (tx, mut rx) = mpsc::channel::<ws::Message>(64);
 
+    // Look tick bookkeeping (M10-T5): frames since the last look, when audio last arrived,
+    // whether the model is mid-response, and whether the session is over.
+    let frames_pending = Arc::new(AtomicU32::new(0));
+    let last_audio: Arc<Mutex<Option<Instant>>> = Arc::new(Mutex::new(None));
+    let responding = Arc::new(AtomicBool::new(false));
+    let closed = Arc::new(AtomicBool::new(false));
+
     let runner_send = runner.clone();
     let mut frame_gate = crate::voice::camera::FrameGate::new(state.voice.camera);
     let tx_frames = tx.clone();
+    let (frames_pending_s, last_audio_s, closed_s) = (frames_pending.clone(), last_audio.clone(), closed.clone());
     let send_handle = tokio::spawn(async move {
         while let Some(Ok(msg)) = ws_receiver.next().await {
             match msg {
                 ws::Message::Binary(data) => {
+                    *last_audio_s.lock().unwrap() = Some(Instant::now());
                     let audio_b64 =
                         base64::engine::general_purpose::STANDARD.encode(&data);
                     if runner_send.send_audio(&audio_b64).await.is_err() {
@@ -159,6 +172,7 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
                                         if runner_send.send_video_frame(mime, data).await.is_err() {
                                             break;
                                         }
+                                        frames_pending_s.fetch_add(1, Ordering::Relaxed);
                                     }
                                     Err(crate::voice::camera::FrameReject::TooFast) => {}
                                     Err(reason) => {
@@ -183,13 +197,20 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
         if frame_gate.accepted + frame_gate.rejected > 0 {
             tracing::debug!(accepted = frame_gate.accepted, rejected = frame_gate.rejected, "camera frames relayed");
         }
+        closed_s.store(true, Ordering::Relaxed);
     });
 
     let runner_recv = runner.clone();
+    let (responding_r, closed_r) = (responding.clone(), closed.clone());
     let recv_handle = tokio::spawn(async move {
         loop {
             match runner_recv.next_event().await {
                 Some(Ok(event)) => {
+                    match &event {
+                        ServerEvent::AudioDelta { .. } | ServerEvent::TextDelta { .. } => responding_r.store(true, Ordering::Relaxed),
+                        ServerEvent::ResponseDone { .. } | ServerEvent::Error { .. } => responding_r.store(false, Ordering::Relaxed),
+                        _ => {}
+                    }
                     let ws_msg = match &event {
                         ServerEvent::AudioDelta { delta, .. } => {
                             Some(ws::Message::Binary(delta.clone().into()))
@@ -251,7 +272,40 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
                 None => break,
             }
         }
+        closed_r.store(true, Ordering::Relaxed);
     });
+
+    // Look tick: Gemini Live evaluates its input only when a turn ends, so while frames arrive
+    // and nobody is speaking, ask it to check the latest frames (`camera::LOOK_PROMPT`).
+    let look_handle = {
+        let runner = runner.clone();
+        let camera_on = state.voice.camera;
+        tokio::spawn(async move {
+            if !camera_on {
+                return;
+            }
+            let mut tick = tokio::time::interval(crate::voice::camera::LOOK_INTERVAL);
+            tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+            loop {
+                tick.tick().await;
+                if closed.load(Ordering::Relaxed) {
+                    break;
+                }
+                if frames_pending.load(Ordering::Relaxed) == 0 || responding.load(Ordering::Relaxed) {
+                    continue;
+                }
+                let talking = last_audio.lock().unwrap().is_some_and(|t| t.elapsed() < crate::voice::camera::SPEECH_GRACE);
+                if talking {
+                    continue;
+                }
+                frames_pending.store(0, Ordering::Relaxed);
+                if runner.send_text(crate::voice::camera::LOOK_PROMPT).await.is_err() {
+                    break;
+                }
+                let _ = runner.create_response().await;
+            }
+        })
+    };
 
     let forward_handle = tokio::spawn(async move {
         while let Some(msg) = rx.recv().await {
@@ -266,6 +320,7 @@ async fn handle_voice_ws(socket: ws::WebSocket, state: AppState, session_id: Opt
         _ = recv_handle => {}
         _ = forward_handle => {}
     }
+    look_handle.abort();
 
     let _ = runner.close().await;
     info!("voice websocket session closed");

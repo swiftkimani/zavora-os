@@ -8,6 +8,29 @@
   'use strict';
 
   const BRIEFING = 'What do I need to know today?';
+  const LABEL = {
+    swipe_left: '👉 Swipe — moving to the Home world',
+    swipe_right: '👈 Swipe — moving to the Work world',
+    open_palm: '✋ Open palm — pausing all agents',
+    wave: "👋 Wave — asking Suzy for today's briefing",
+    pinch: '🤏 Pinch — closing the card in front',
+    pinch_camera: '🤏 Pinch — closing the camera window',
+  };
+
+  // On-screen text for every gesture acted on: what was seen and what it is doing.
+  let hud = null, hudTimer = null;
+  function showHud(text) {
+    if (!hud) {
+      hud = document.createElement('div');
+      hud.className = 'gesture-hud';
+      hud.setAttribute('role', 'status');
+      document.body.appendChild(hud);
+    }
+    hud.textContent = text;
+    hud.classList.add('show');
+    clearTimeout(hudTimer);
+    hudTimer = setTimeout(() => hud.classList.remove('show'), 2800);
+  }
 
   function toast(msg) {
     window.__ZAVORA_UI__?.showSuzyCustom?.(msg);
@@ -44,11 +67,13 @@
   function closeWindow() {
     const card = document.querySelector('#cards .card.focused') || [...document.querySelectorAll('#cards .card')].pop();
     if (card && typeof window.fling === 'function') {
+      showHud(LABEL.pinch);
       window.fling(card);
       return;
     }
     const live = window.ZavoraLiveVoice;
     if (live?.isCameraActive?.()) {
+      showHud(LABEL.pinch_camera);
       live.stopCamera();
       document.getElementById('cam')?.classList.remove('listening');
       toast('Camera window closed.');
@@ -58,21 +83,26 @@
   function onGesture(ev) {
     if (window.__ZAVORA_DEMO__) return;
     const gesture = ev.detail?.gesture;
+    if (!gesture || gesture === 'none') return; // look tick with nothing to do
     const lens = window.__ZAVORA_LENS__;
     switch (gesture) {
       case 'swipe_left':
+        showHud(LABEL.swipe_left);
         lens?.step?.(1); // toward Home, like a touch swipe
         break;
       case 'swipe_right':
+        showHud(LABEL.swipe_right);
         lens?.step?.(-1); // toward Work
         break;
       case 'open_palm':
+        showHud(LABEL.open_palm);
         pauseAgents();
         break;
       case 'pinch':
         closeWindow();
         break;
       case 'wave':
+        showHud(LABEL.wave);
         window.dispatchEvent(
           new CustomEvent('zavora:voice-intent', { detail: { sessionId: sessionId(), args: { text: BRIEFING } } })
         );

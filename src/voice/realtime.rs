@@ -169,6 +169,9 @@ pub async fn build_suzy_runner(
             },
             FnToolHandler::new(|call| {
                 let raw = call.arguments["gesture"].as_str().unwrap_or("");
+                if raw.trim().eq_ignore_ascii_case(camera::NO_GESTURE) {
+                    return Ok(json!({ "status": "none" }));
+                }
                 match camera::Gesture::parse(raw) {
                     Some(g) => Ok(json!({ "status": "relayed", "gesture": g.as_str(), "effect": g.effect() })),
                     None => Ok(json!({ "status": "error", "message": "unknown gesture; use one of the listed values" })),

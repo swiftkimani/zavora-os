@@ -16,6 +16,7 @@
 
   let box = null, video = null, status = null, last = null;
   let reply = '', replyDone = false;
+  let frames = 0, looks = 0;
 
   function ensure() {
     if (box) return box;
@@ -37,6 +38,7 @@
     if (e.detail?.active) {
       ensure();
       video.srcObject = e.detail.stream;
+      frames = 0; looks = 0;
       status.textContent = 'Suzy is watching';
       box.classList.add('on');
     } else if (box) {
@@ -47,14 +49,16 @@
 
   window.addEventListener('zavora:camera-frame', (e) => {
     if (!status) return;
-    const n = e.detail?.count || 0;
-    status.textContent = `Suzy is watching · ${n} frame${n === 1 ? '' : 's'} sent`;
+    frames = e.detail?.count || 0;
+    status.textContent = `Suzy is watching · ${frames} frames · looked ${looks}×`;
   });
 
   window.addEventListener('zavora:gesture', (e) => {
     if (!last) return;
     const g = e.detail?.gesture;
-    if (!g || g === 'none') return;
+    if (g === 'none') { looks++; if (status) status.textContent = `Suzy is watching · ${frames} frames · looked ${looks}×`; return; }
+    if (!g) return;
+    looks++;
     last.textContent = EFFECT[g] || `gesture: ${g}`;
     last.classList.add('hit');
     setTimeout(() => last.classList.remove('hit'), 1800);

@@ -64,11 +64,11 @@ impl Gesture {
     /// How the gesture looks in the frames.
     pub fn cue(&self) -> &'static str {
         match self {
-            Gesture::SwipeLeft => "a hand sweeping from right to left",
-            Gesture::SwipeRight => "a hand sweeping from left to right",
-            Gesture::OpenPalm => "an open palm held still toward the camera for about a second",
-            Gesture::Wave => "a wave",
-            Gesture::Pinch => "a pinch — thumb and index finger brought together, like picking something up",
+            Gesture::SwipeLeft => "a hand moving across the frame from right to left over two or three consecutive frames",
+            Gesture::SwipeRight => "a hand moving across the frame from left to right over two or three consecutive frames",
+            Gesture::OpenPalm => "an open hand, fingers spread, raised and held still facing the camera",
+            Gesture::Wave => "an open hand raised beside the head, moving side to side across consecutive frames",
+            Gesture::Pinch => "thumb and index fingertips touching, other fingers curled, held toward the camera",
         }
     }
 
@@ -105,9 +105,12 @@ pub fn instruction() -> String {
         "\n\nCamera: when the user turns the camera on you also receive still frames, about two per second, \
          mirrored like a selfie — a hand the user moves to their left moves left in the frame. Use them only \
          to recognise the deliberate hand gestures below and whether the user is present. While the camera \
-         is on you periodically get the message \"[look]\": compare the most recent frames and call \
-         ui_gesture with the gesture you see, or with \"none\" if there is none — never answer \"[look]\" \
-         with words. A gesture can also happen while the user is speaking; report it the same way. Do not \
+         is on you periodically get the message \"[look]\": frames arrive about every half second, so \
+         compare the last three or four to see movement, then respond ONLY by calling ui_gesture — with \
+         the gesture you see, or \"none\" — never with words or speech, and never mention \"[look]\". \
+         A hand clearly raised toward the camera is deliberate: report the gesture when you are fairly \
+         sure rather than waiting for certainty. A gesture can also happen while the user is speaking; \
+         report it the same way. Do not \
          describe what you see unless asked, and never mention people, objects, screens or text in the \
          frame. Call ui_gesture once per gesture and do not repeat it for the same movement; after the \
          call stay quiet unless the user speaks:",

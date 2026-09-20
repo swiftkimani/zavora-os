@@ -1580,7 +1580,15 @@ let currentVoice = null;   // only one voice clip plays at a time
 function stopVoice(){
   if (currentVoice) { try { currentVoice.pause(); currentVoice.currentTime = 0; } catch(_){} currentVoice = null; }
 }
+// Local (prerecorded) voice: off whenever Suzy's live voice is available, so only one voice
+// speaks. Demo mode keeps the clips — they are its only voice. Force on: localStorage zavora_local_voice=1.
+function localVoiceAllowed(){
+  try { if (localStorage.getItem('zavora_local_voice') === '1') return true; } catch(_){}
+  if (window.__ZAVORA_DEMO__) return true;
+  return !(window.ZavoraLiveVoice?.isEnabled?.());
+}
 async function speak(arg, onAudio){
+  if (!localVoiceAllowed()) return false;
   const id = clipFor(arg);
   try {
     stopVoice();   // cut off any in-progress clip
@@ -2312,6 +2320,7 @@ async function playGreeting(){
 }
 let wallTimer, clockTimer, idleTimer;
 async function speakUrl(url, onAudio){
+  if (!localVoiceAllowed()) return false;
   try {
     stopVoice();
     const audio = new Audio(url);
